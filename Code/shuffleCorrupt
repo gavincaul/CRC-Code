@@ -1,0 +1,188 @@
+#!/bin/bash
+
+
+corrupt_video(){
+    cp "$1" "corrupted$2.avi"
+    dd if=/dev/urandom of="corrupted$2.avi" bs=512 count="$2" seek=$((RANDOM % $(stat --format=%s corrupted$2.avi))) conv=notrunc
+    mv "corrupted$2.avi" "$3"
+}
+
+shuffle_frames(){
+	# Random Frames (replace frames at random)
+	echo -e "\n\n -- RANDOM -- \n\n"
+    for (( i = $5; i <= $2; i++ )); do
+		cp "$1" "corrupted$i.avi"
+        frame_number=$(($RANDOM % $4))
+        ffmpeg -y -i "corrupted$2.avi" -vf "select=eq(n\,$frame_number)" -vframes 1 "random_frame.png" -loglevel error
+        if [[ ! -f "random_frame.png" ]]; then
+            echo "Error: Failed to extract frame $frame_number. Skipping..."
+            continue
+        fi
+		frame_number=$(($RANDOM % $4))
+		ffmpeg -y -i "corrupted$i.avi" -i "random_frame.png" -filter_complex "[0:v][1:v]overlay=0:0:enable='eq(n\,$frame_number)'" -c:v libx264 -crf 23 -preset fast "temp_corrupted$i.avi" -loglevel error
+        
+		if [[ ! -f "temp_corrupted$i.avi" ]]; then
+            echo "Error: Failed to overlay frame $frame_number. Skipping..."
+            rm -f "random_frame.png"
+            continue
+        fi
+        cp "temp_corrupted$i.avi" "corrupted$i.avi"
+        rm -f "random_frame.png" "temp_corrupted$i.avi"
+		progress=$(( ($i * 100) / "$2" ))
+        printf "\rProgress: [%-50s] %d%%" $(printf "%0.s#" $(seq 1 $((progress / 2)))) $progress
+    done
+    mv corrupted*.avi "$3/randomFrames/"
+	echo -e "\n"
+
+
+
+
+
+	echo -e "\n\n -- SLOTTED -- \n\n"
+	cp "$1" "corrupted$2.avi"
+	#slotted frames (Replace frames at random, but in a range)
+	for (( i = $5; i<= $2; i++ )); do
+		
+		frames=()
+		start_range=$(( (RANDOM % ($4 - i + 1)) ))
+		for(( j = 0; j< i; j++ )); do
+			frame_number=$((start_range + $j)) 
+			echo "grabbing: $frame_number"
+			ffmpeg -y -i "corrupted$2.avi" -vf "select=eq(n\,${frame_number})" -fps_mode vfr -loglevel error "random_frame_$frame_number.png"
+
+			if [[ ! -f "random_frame_$frame_number.png" ]]; then
+            	echo "Error: Failed to extract frame $frame_number. Skipping..."
+            	continue
+        	fi
+
+			frames+=("random_frame_$frame_number.png")
+		done	
+		cp "corrupted$2.avi" "temp_corrupted.avi"
+		start_range=$(( (RANDOM % ($4 - i + 1)) ))
+		for ((i = 0; i < ${#frames[@]}; i++)); do
+			current_frame="${frames[$i]}"
+			frame_number=$((start_range + i)) 
+			echo "replacing: $frame_number with $current_frame"
+
+			ffmpeg -y -i "corrupted$2.avi" -i "$current_frame" \
+				-filter_complex "[0:v][1:v]overlay=0:0:enable='eq(n\,${frame_number})'" \
+				-c:v libx264 -crf 23 -preset fast "temp_corrupted.avi" -loglevel error
+
+			rm "$current_frame"
+			cp "temp_corrupted.avi" "corrupted$2.avi"
+		done
+		rm -f "temp_corrupted.avi" "${frames[@]}"
+	done
+	
+	mv corrupted*.avi "$3/slottedFrames/"
+
+
+
+	echo -e "\n\n -- SWAPPED -- \n\n"
+
+	#swap frames at random
+	
+    echo -e "\n\n -- SWAPPED -- \n\n"
+    cp "$1" "corrupted$2.avi"
+
+    for (( i = 1; i <= $2; i++ )); do
+        frame1=$((RANDOM % $4))
+        frame2=$((RANDOM % $4))
+        while [[ "$frame1" -eq "$frame2" ]]; do
+            frame2=$((RANDOM % $4))
+        done
+
+        echo "Swapping frames: $frame1 and $frame2"
+
+        ffmpeg -y -i "corrupted$2.avi" -vf "select=eq(n\,$frame1)" -vframes 1 "frame1.png" -loglevel error
+        ffmpeg -y -i "corrupted$2.avi" -vf "select=eq(n\,$frame2)" -vframes 1 "frame2.png" -loglevel error
+
+        if [[ ! -f "frame1.png" || ! -f "frame2.png" ]]; then
+            echo "Error: Failed to extract one or both frames. Skipping..."
+            rm -f frame1.png frame2.png
+            continue
+        fi
+        ffmpeg -y -i "corrupted$2.avi" -i "frame1.png" -i "frame2.png" \
+            -filter_complex "[0:v][1:v]overlay=0:0:enable='eq(n\,$frame2)'; [0:v][2:v]overlay=0:0:enable='eq(n\,$frame1)'" \
+            -c:v libx264 -crf 23 -preset fast "temp_corrupted.avi" -loglevel error
+        if [[ ! -f "temp_corrupted.avi" ]]; then
+            echo "Error: Failed to swap frames. Skipping..."
+            rm -f frame1.png frame2.png
+            continue
+        fi
+        mv "temp_corrupted.avi" "corrupted$2.avi"
+        rm -f frame1.png frame2.png
+    done
+    mkdir -p "$3/swappedFrames"
+    mv "corrupted$2.avi" "$3/swappedFrames/"
+    echo -e "\n -- SWAP COMPLETE -- \n"
+}
+
+if [[ "$1" == "-h" ]]; then
+	echo -e "MANUAL\nThe script will take a video file, the number of corrupted frame, and output path for the video(s).\n\nIf you provide a video and 10 corrupted frames, the program will produce 10 videos, all with i=1 corrupted frames/scenes, i=2 corrupted... i=10.\nIf you need just one video, add argument -c (for count) BEFORE the number of frames.\n\nUSAGE: ./corruptionVids video_file num_corrupted_frames output_path ?corrupt_or_frameSwap (0 or 1)" 
+exit 0
+fi
+
+if [[ "$2" == "-c" ]]; then
+	if [[ -z "$1" ]] && [[ -z "$3" ]] && [[ -z "$4" ]]; then
+		echo "Usage: ./corruptionVids video_file -c num_corrupted_frames output_path"
+		echo "Exited with code 1 (failed)"
+		exit 1
+	fi
+	if [[ $5 == 0 ]] || [[ -z $5 ]]; then
+		corrupt_video "$1" "$3" "$4"
+		exit 0
+	fi
+	if [[ $5 == 1 ]]; then
+		new_dir="$4/CorruptedVideos_$(date +"%Y-%m-%d")"
+		if [ -d "$new_dir" ]; then
+			new_dir="$4/CorruptedVideos_$(date +"%Y-%m-%d-%H-%M-%S")"    
+		fi
+		mkdir -p "$new_dir"
+		mkdir -p "$new_dir/randomFrames"
+		mkdir -p "$new_dir/slottedFrames"
+		mkdir -p "$new_dir/swappedFrames"
+		num_frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1")
+		shuffle_frames "$1" "$3" "$new_dir" "$num_frames" "$3"
+		exit 0
+	fi
+	exit 0
+fi
+
+if [[ -z "$1" ]] || [[ -z "$2" ]] || [[ -z "$3" ]]; then
+	echo "Usage: ./corruptionVids video_file num_corrupted_frames output_path"
+	echo "Use ./corruptionVids -h for more information"
+	echo "Exited with code 1 (failed)"
+	exit 1
+fi
+
+new_dir="$3/CorruptedVideos_$(date +"%Y-%m-%d")"
+if [ -d "$new_dir" ]; then
+	new_dir="$3/CorruptedVideos_$(date +"%Y-%m-%d-%H-%M-%S")"    
+fi
+mkdir -p "$new_dir"
+if [[ "$4" == 0 ]] || [[ -z $4 ]]; then
+	for (( i=1; i<= "$2"; i++ )); do
+		corrupt_video "$1" $i "$new_dir"
+	done
+fi
+mkdir -p "$new_dir/randomFrames"
+mkdir -p "$new_dir/slottedFrames"
+mkdir -p "$new_dir/swappedFrames"
+
+num_frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1")
+if [[ "$4" == 1 ]]; then
+	divide=2
+	for (( i=1; i<= "$2" && i<(( $num_frames / $divide)); i++ )); do
+		shuffle_frames "$1" "$2" "$new_dir" $num_frames 1
+
+	done
+fi
+	
+
+echo "Made $2 new corrupted files"
+exit 0
+
+
+
+

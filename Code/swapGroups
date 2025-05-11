@@ -1,0 +1,66 @@
+#!/bin/bash
+
+set -e
+
+if [[ "$1" == "-h" || $# -ne 4 ]]; then
+    echo -e "Usage: ./swapGroupsFast input_video group_size swap_count output_dir\n"
+    echo "Description:"
+    echo "  Extracts all frames once, randomly swaps frame groups, then reassembles video."
+    echo ""
+    echo "Arguments:"
+    echo "  input_video   - path to the source video"
+    echo "  group_size    - number of frames per group to swap"
+    echo "  swap_count    - number of swaps to perform"
+    echo "  output_dir    - where to save corrupted video"
+    exit 1
+fi
+
+input="$1"
+group_size="$2"
+swap_count="$3"
+output_dir="$4"
+
+basename=$(basename "$input" | cut -d. -f1)
+work_dir="$output_dir/${basename}_swap_$(date +%s)"
+mkdir -p "$work_dir/frames"
+mkdir -p "$output_dir"
+
+echo "Extracting all frames..."
+ffmpeg -i "$input" -qscale:v 2 "$work_dir/frames/frame_%05d.jpg" -loglevel error
+
+frame_files=("$work_dir"/frames/frame_*.jpg)
+num_frames=${#frame_files[@]}
+
+if (( num_frames <= group_size * 2 )); then
+    echo "Error: Not enough frames ($num_frames) for swap group size of $group_size."
+    exit 1
+fi
+
+echo "Swapping frame groups..."
+for ((i=0; i<swap_count; i++)); do
+    startA=$((RANDOM % (num_frames - group_size)))
+    startB=$((RANDOM % (num_frames - group_size)))
+    while [[ $startA -eq $startB ]]; do
+        startB=$((RANDOM % (num_frames - group_size)))
+    done
+
+    for ((j=0; j<group_size; j++)); do
+        idxA=$((startA + j))
+        idxB=$((startB + j))
+
+        tmp="${frame_files[$idxA]}"
+        frame_files[$idxA]="${frame_files[$idxB]}"
+        frame_files[$idxB]="$tmp"
+    done
+done
+
+echo "Rebuilding video..."
+frame_list="$work_dir/frame_list.txt"
+> "$frame_list"
+for f in "${frame_files[@]}"; do
+	echo "file 'frames/$(basename "$f")'" >> "$frame_list"
+done
+ffmpeg -f concat -safe 0 -i "$frame_list" -i "$input" -map 0:v -map 1:a? -c:v libx264 -preset fast -crf 23 -c:a copy "$output_dir/${basename}_corrupted.mp4" -loglevel error
+
+echo "Done. Output saved to: $output_dir/${basename}_corrupted.mp4"
+
